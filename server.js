@@ -32,14 +32,18 @@ app.use((req, res, next) => {
   next();
 });
 
-/* ===== ROUTE ===== */
-app.post("/upload", upload.single("file"), async (req, res) => {
+/* =======================================================
+   ✅ MAIN ROUTE (MATCHES HTML)
+   ======================================================= */
+app.post("/upload-pdf", upload.single("file"), async (req, res) => {
   try {
     const file = req.file;
-    if (!file) return res.status(400).json({ error: "No file uploaded" });
+    if (!file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
 
-    /* === 1. Upload to Supabase Storage === */
-    const storagePath = `uploads/${Date.now()}_${file.originalname.replace(/\s+/g, "_")}`;
+    /* ===== 1. Upload to Supabase Storage ===== */
+    const storagePath = `pdfs/${Date.now()}_${file.originalname.replace(/\s+/g, "_")}`;
     const buffer = fs.readFileSync(file.path);
 
     const { error: uploadError } = await supabase
@@ -58,20 +62,24 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     const publicUrl = publicData.publicUrl;
 
-    /* === 2. Upload PDF to Peecho === */
+    /* ===== 2. Upload PDF to Peecho ===== */
     const form = new FormData();
     form.append("file", fs.createReadStream(file.path), file.originalname);
     form.append("file_type", "pdf");
     form.append("print_intent", "book");
     form.append("offering_id", OFFERING_ID);
 
-    const auth = "Basic " + Buffer.from(`${PEECHO_API_KEY}:`).toString("base64");
+    const auth =
+      "Basic " + Buffer.from(`${PEECHO_API_KEY}:`).toString("base64");
 
-    const peechoFileRes = await fetch(`${PEECHO_BASE}/rest/v3/files/`, {
-      method: "POST",
-      headers: { Authorization: auth },
-      body: form
-    });
+    const peechoFileRes = await fetch(
+      `${PEECHO_BASE}/rest/v3/files/`,
+      {
+        method: "POST",
+        headers: { Authorization: auth },
+        body: form
+      }
+    );
 
     const peechoFileText = await peechoFileRes.text();
     if (!peechoFileRes.ok) {
@@ -83,27 +91,30 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     const peechoFile = JSON.parse(peechoFileText);
 
-    /* === 3. Create Order === */
-    const orderRes = await fetch(`${PEECHO_BASE}/rest/v3/orders/`, {
-      method: "POST",
-      headers: {
-        Authorization: auth,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        currency: "EUR",
-        item_details: [
-          {
-            item_reference: "travelbook",
-            offering_id: OFFERING_ID,
-            quantity: 1,
-            file_details: {
-              file_id: peechoFile.id
+    /* ===== 3. Create Order ===== */
+    const orderRes = await fetch(
+      `${PEECHO_BASE}/rest/v3/orders/`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: auth,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          currency: "EUR",
+          item_details: [
+            {
+              item_reference: "travelbook",
+              offering_id: OFFERING_ID,
+              quantity: 1,
+              file_details: {
+                file_id: peechoFile.id
+              }
             }
-          }
-        ]
-      })
-    });
+          ]
+        })
+      }
+    );
 
     const orderText = await orderRes.text();
     if (!orderRes.ok) {
@@ -123,6 +134,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     });
 
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: String(err) });
   }
 });

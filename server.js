@@ -11,14 +11,17 @@ const upload = multer({ dest: "tmp/" });
 /* ===== ENV ===== */
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || "uploads";
+const SUPABASE_BUCKET = "uploads";
 
 const PEECHO_API_KEY = process.env.PEECHO_API_KEY;
-const PEECHO_BASE = process.env.PEECHO_BASE || "https://test.www.peecho.com";
-const OFFERING_ID = Number(process.env.PEECHO_OFFERING_ID || "6884792");
+const PEECHO_BASE = "https://test.www.peecho.com";
+const OFFERING_ID = Number(process.env.PEECHO_OFFERING_ID);
 
 /* ===== CLIENTS ===== */
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const supabase = createClient(
+  SUPABASE_URL,
+  SUPABASE_SERVICE_ROLE_KEY
+);
 
 /* ===== CORS ===== */
 app.use((req, res, next) => {
@@ -30,167 +33,108 @@ app.use((req, res, next) => {
 });
 
 /* =======================================================
-   MAIN ROUTE: matches your HTML (POST /upload-pdf)
-   - expects field name "file" (FormData)
-   - 1) save to Supabase (backup)
-   - 2) upload to Peecho (multipart, minimal fields)
-   - 3) create order at Peecho
+   MAIN ROUTE
    ======================================================= */
 app.post("/upload-pdf", upload.single("file"), async (req, res) => {
-  const tmpPath = req?.file?.path;
   try {
     const file = req.file;
-    if (!file) {
-      return res.status(400).json({ error: "No file uploaded (field name 'file')" });
-    }
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
 
-    // === 1) Upload to Supabase Storage (backup) ===
+    /* ===== 1. Upload to Supabase ===== */
     const storagePath = `pdfs/${Date.now()}_${file.originalname.replace(/\s+/g, "_")}`;
     const buffer = fs.readFileSync(file.path);
 
-    const { error: uploadError } = await supabase
+    const { error } = await supabase
       .storage
       .from(SUPABASE_BUCKET)
-      .upload(storagePath, buffer, { contentType: "application/pdf" });
+      .upload(storagePath, buffer, {
+        contentType: "application/pdf"
+      });
 
-    if (uploadError) {
-      console.error("Supabase upload error:", uploadError);
-      throw uploadError;
-    }
+    if (error) throw error;
 
-    const { data: publicData } = supabase
+    const { data } = supabase
       .storage
       .from(SUPABASE_BUCKET)
       .getPublicUrl(storagePath);
 
-    const publicUrl = publicData?.publicUrl ?? null;
+    const publicUrl = data.publicUrl;
 
-    console.log("Supabase publicUrl:", publicUrl);
-
-    // debug: ensure PEECHO_API_KEY available
-    console.log("Using Peecho key present:", !!PEECHO_API_KEY);
-
-    // === 2) Upload file to Peecho (multipart) ===
-    // Use minimal required fields: file + file_type (do not include offering_id here)
+    /* ===== 2. Upload PDF to Peecho (FIXED ENDPOINT) ===== */
     const form = new FormData();
     form.append("file", fs.createReadStream(file.path), file.originalname);
     form.append("file_type", "pdf");
 
-    // Merge form headers (boundary) with Authorization
-    const formHeaders = form.getHeaders();
-    const peechoFileUrl = `${PEECHO_BASE.replace(/\/$/, "")}/rest/v3/files/`;
+    const peechoRes = await fetch(
+      `${PEECHO_BASE}/rest/v3/files/upload/`,
+      {
+        method: "POST",
+        headers: {
+          ...form.getHeaders(),
+          Authorization: `Bearer ${PEECHO_API_KEY}`
+        },
+        body: form
+      }
+    );
 
-    console.log("POST file to Peecho URL:", peechoFileUrl);
-    console.log("Peecho request headers preview:", Object.keys(formHeaders));
+    const peechoText = await peechoRes.text();
 
-    const peechoFileRes = await fetch(peechoFileUrl, {
-      method: "POST",
-      headers: {
-        ...formHeaders,
-        Authorization: `Bearer ${PEECHO_API_KEY}`
-      },
-      body: form
-    });
-
-    const peechoFileText = await peechoFileRes.text();
-    console.log("Peecho file upload status:", peechoFileRes.status, peechoFileRes.statusText);
-    console.log("Peecho file upload content-type:", peechoFileRes.headers.get("content-type"));
-    // if not ok, return detailed debug info (truncated) to help diagnose
-    if (!peechoFileRes.ok) {
-      console.error("Peecho file upload failed, raw response:", peechoFileText);
-      return res.status(502).json({
+    if (!peechoRes.ok) {
+      return res.status(500).json({
         error: "Peecho file upload failed",
-        status: peechoFileRes.status,
-        statusText: peechoFileRes.statusText,
-        headers: Object.fromEntries(peechoFileRes.headers.entries()),
-        details: peechoFileText ? (peechoFileText.length > 4000 ? peechoFileText.slice(0, 4000) : peechoFileText) : ""
+        status: peechoRes.status,
+        details: peechoText
       });
     }
 
-    let peechoFile;
-    try {
-      peechoFile = JSON.parse(peechoFileText);
-    } catch (e) {
-      console.error("Peecho file returned non-JSON:", peechoFileText);
-      return res.status(502).json({
-        error: "Peecho returned non-JSON for file upload",
-        details: peechoFileText
-      });
-    }
+    const peechoFile = JSON.parse(peechoText);
 
-    // Ensure we have ID from Peecho
-    if (!peechoFile?.id) {
-      console.error("Peecho file response missing id:", peechoFile);
-      return res.status(502).json({
-        error: "Peecho file response missing id",
-        details: peechoFile
-      });
-    }
-
-    // === 3) Create order at Peecho ===
-    const orderUrl = `${PEECHO_BASE.replace(/\/$/, "")}/rest/v3/orders/`;
-    const orderBody = {
-      currency: "EUR",
-      item_details: [
-        {
-          item_reference: "travelbook",
-          offering_id: OFFERING_ID,
-          quantity: 1,
-          file_details: {
-            file_id: peechoFile.id,
-            file_type: "pdf"
-          }
-        }
-      ]
-    };
-
-    console.log("Creating order at Peecho, offering:", OFFERING_ID);
-    const orderRes = await fetch(orderUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${PEECHO_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(orderBody)
-    });
+    /* ===== 3. Create Order ===== */
+    const orderRes = await fetch(
+      `${PEECHO_BASE}/rest/v3/orders/`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${PEECHO_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          currency: "EUR",
+          item_details: [
+            {
+              item_reference: "travelbook",
+              offering_id: OFFERING_ID,
+              quantity: 1,
+              file_details: {
+                file_id: peechoFile.id
+              }
+            }
+          ]
+        })
+      }
+    );
 
     const orderText = await orderRes.text();
-    console.log("Peecho order status:", orderRes.status, orderRes.statusText);
 
     if (!orderRes.ok) {
-      console.error("Order creation failed, body:", orderText);
-      return res.status(502).json({
+      return res.status(500).json({
         error: "Order creation failed",
-        status: orderRes.status,
-        statusText: orderRes.statusText,
-        details: orderText ? (orderText.length > 4000 ? orderText.slice(0,4000) : orderText) : ""
+        details: orderText
       });
     }
 
-    let orderJson;
-    try {
-      orderJson = JSON.parse(orderText);
-    } catch (e) {
-      console.error("Order returned non-JSON:", orderText);
-      return res.status(502).json({ error: "Order returned non-JSON", details: orderText });
-    }
+    fs.unlinkSync(file.path);
 
-    // cleanup temp file
-    try { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); } catch (e) { console.warn("Could not unlink tmp file:", e); }
-
-    // success
-    return res.json({
+    res.json({
       success: true,
       supabaseFile: publicUrl,
       peechoFile,
-      order: orderJson
+      order: JSON.parse(orderText)
     });
 
   } catch (err) {
-    console.error("Unhandled exception:", err);
-    // try cleanup tmp file
-    try { if (tmpPath && fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (e) { console.warn("cleanup fail:", e); }
-    return res.status(500).json({ error: String(err) });
+    console.error(err);
+    res.status(500).json({ error: String(err) });
   }
 });
 

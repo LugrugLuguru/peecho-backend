@@ -14,7 +14,6 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const SUPABASE_BUCKET = "uploads";
 
 const PEECHO_API_KEY = process.env.PEECHO_API_KEY;
-const PEECHO_BASE = "https://test.www.peecho.com";
 const OFFERING_ID = Number(process.env.PEECHO_OFFERING_ID);
 
 /* ===== CLIENTS ===== */
@@ -60,18 +59,21 @@ app.post("/upload-pdf", upload.single("file"), async (req, res) => {
 
     const publicUrl = data.publicUrl;
 
-    /* ===== 2. Upload PDF to Peecho (FIXED ENDPOINT) ===== */
+    /* ===== 2. Peecho File Upload (FIXED) ===== */
     const form = new FormData();
-    form.append("file", fs.createReadStream(file.path), file.originalname);
+    form.append("file", fs.createReadStream(file.path));
     form.append("file_type", "pdf");
 
+    const basicAuth =
+      "Basic " + Buffer.from(`${PEECHO_API_KEY}:`).toString("base64");
+
     const peechoRes = await fetch(
-      `${PEECHO_BASE}/rest/v3/files/upload/`,
+      "https://test.www.peecho.com/rest/v3/files/upload",
       {
         method: "POST",
         headers: {
           ...form.getHeaders(),
-          Authorization: `Bearer ${PEECHO_API_KEY}`
+          Authorization: basicAuth
         },
         body: form
       }
@@ -91,11 +93,11 @@ app.post("/upload-pdf", upload.single("file"), async (req, res) => {
 
     /* ===== 3. Create Order ===== */
     const orderRes = await fetch(
-      `${PEECHO_BASE}/rest/v3/orders/`,
+      "https://test.www.peecho.com/rest/v3/orders",
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${PEECHO_API_KEY}`,
+          Authorization: basicAuth,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({

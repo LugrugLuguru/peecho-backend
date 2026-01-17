@@ -61,6 +61,7 @@ app.post("/upload-pdf", upload.single("file"), async (req, res) => {
       .getPublicUrl(storagePath);
 
     const publicUrl = publicData.publicUrl;
+console.log("Using Peecho key:", PEECHO_API_KEY?.slice(0, 6), "...");
 
     /* ===== 2. Upload PDF to Peecho ===== */
     const form = new FormData();
@@ -69,14 +70,20 @@ app.post("/upload-pdf", upload.single("file"), async (req, res) => {
     form.append("print_intent", "book");
     form.append("offering_id", OFFERING_ID);
 
-    const auth =
-      "Basic " + Buffer.from(`${PEECHO_API_KEY}:`).toString("base64");
+ const authHeader = {
+  Authorization: `Bearer ${PEECHO_API_KEY}`
+};
+
 
     const peechoFileRes = await fetch(
       `${PEECHO_BASE}/rest/v3/files/`,
       {
         method: "POST",
-        headers: { Authorization: auth },
+        headers: {
+  ...form.getHeaders(),
+  Authorization: `Bearer ${PEECHO_API_KEY}`
+},
+
         body: form
       }
     );
@@ -97,9 +104,10 @@ app.post("/upload-pdf", upload.single("file"), async (req, res) => {
       {
         method: "POST",
         headers: {
-          Authorization: auth,
-          "Content-Type": "application/json"
-        },
+  Authorization: `Bearer ${PEECHO_API_KEY}`,
+  "Content-Type": "application/json"
+},
+
         body: JSON.stringify({
           currency: "EUR",
           item_details: [

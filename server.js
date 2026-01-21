@@ -6,58 +6,48 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-/**
- * HTML direkt ausliefern
- */
 app.get("/", (req, res) => {
-  res.send(`
-<!DOCTYPE html>
-<html lang="de">
-<head>
-  <meta charset="UTF-8">
-  <title>PrintAPI Test</title>
-</head>
-<body>
-  <h1>PrintAPI Verbindung testen</h1>
-  <button onclick="test()">Test starten</button>
-  <pre id="out">Warte…</pre>
-
-  <script>
-    async function test() {
-      const out = document.getElementById("out");
-      out.textContent = "Sende Anfrage…";
-
-      const res = await fetch("/test", { method: "POST" });
-      const data = await res.json();
-
-      out.textContent = JSON.stringify(data, null, 2);
-    }
-  </script>
-</body>
-</html>
-  `);
+  res.send("Backend läuft");
 });
 
-/**
- * API-Test
- */
 app.post("/test", async (req, res) => {
   try {
+    if (!process.env.PRINTAPI_API_KEY) {
+      return res.status(500).json({
+        error: "PRINTAPI_API_KEY missing in env"
+      });
+    }
+
     const r = await fetch("https://test.printapi.nl/v2/me", {
       headers: {
-        Authorization: `Bearer ${process.env.PRINTAPI_API_KEY}`
+        Authorization: `Bearer ${process.env.PRINTAPI_API_KEY}`,
+        "Content-Type": "application/json"
       }
     });
 
-    const data = await r.json();
+    const text = await r.text();
 
-    res.json({
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      return res.status(500).json({
+        error: "PrintAPI returned non-JSON",
+        raw: text
+      });
+    }
+
+    res.status(r.status).json({
       ok: r.ok,
       status: r.status,
-      data
+      data: json
     });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+
+  } catch (err) {
+    res.status(500).json({
+      error: "Server exception",
+      message: err.message
+    });
   }
 });
 

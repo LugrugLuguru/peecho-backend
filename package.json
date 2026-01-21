@@ -1,14 +1,11 @@
 {
-  "name": "printapi-backend",
-  "version": "1.0.0",
-  "main": "index.js",
+  "name": "peecho-backend",
   "type": "module",
+  "version": "1.0.0",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "node-fetch": "^3.3.2",
-    "cors": "^2.8.5"
+    "express": "^4.19.2"
   }
 }

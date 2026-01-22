@@ -61,7 +61,7 @@ app.post("/order-book", async (req, res) => {
       body: JSON.stringify({
         email: "kunde@example.com",
         items: [{
-          productId: "boek_hc_a5_sta", // DIN A4 Hardcover
+          productId: "boek_hc_a4_sta", // DIN A4 Hardcover
           quantity: 1
         }],
         shipping: {

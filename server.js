@@ -61,7 +61,7 @@ app.post("/order-book", async (req, res) => {
       body: JSON.stringify({
         email: "kunde@example.com",
         items: [{
-          productId: "book_a4_hc", // DIN A4 Hardcover
+          productId: "boek_hc_a5_sta", // DIN A4 Hardcover
           quantity: 1
         }],
         shipping: {
@@ -116,3 +116,26 @@ app.post("/order-book", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Server läuft"));
+
+
+app.get("/products", async (req, res) => {
+  try {
+    const token = await getAccessToken();
+
+    const r = await fetch("https://test.printapi.nl/v2/products", {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/json"
+      }
+    });
+
+    const text = await r.text();
+    let json;
+    try { json = JSON.parse(text); } catch { json = text; }
+
+    res.json({ status: r.status, response: json });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});

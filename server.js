@@ -139,7 +139,7 @@ app.post("/order-book", async (req, res) => {
     // 5) Return checkout
     return res.json({
       orderId: orderJson.id,
-      checkoutUrl: orderJson.checkout.setupUrl
+      checkoutUrl: orderJson.checkout.url
     });
 
   } catch (e) {

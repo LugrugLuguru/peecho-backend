@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
+import FormData from "form-data";
 
 dotenv.config();
 
@@ -41,6 +42,7 @@ async function getAccessToken() {
   return cachedToken;
 }
 
+// ================= HELPERS =================
 async function downloadPdfFromSupabase(path) {
   const { data, error } = await supabase
     .storage
@@ -48,15 +50,20 @@ async function downloadPdfFromSupabase(path) {
     .download(path);
 
   if (error) throw error;
-
   return Buffer.from(await data.arrayBuffer());
 }
 
-async function putPdfToPrintApi(uploadUrl, pdfBuffer) {
+async function uploadPdfToPrintApi(uploadUrl, pdfBuffer, filename) {
+  const form = new FormData();
+  form.append("file", pdfBuffer, {
+    filename,
+    contentType: "application/pdf"
+  });
+
   const r = await fetch(uploadUrl, {
-    method: "PUT",
-    headers: { "Content-Type": "application/pdf" },
-    body: pdfBuffer
+    method: "POST",
+    body: form,
+    headers: form.getHeaders()
   });
 
   if (!r.ok) {
@@ -80,7 +87,7 @@ app.post("/order-book", async (req, res) => {
 
     const token = await getAccessToken();
 
-    // 1) Order erstellen
+    // 1️⃣ Order erstellen
     const orderRes = await fetch("https://test.printapi.nl/v2/orders", {
       method: "POST",
       headers: {
@@ -109,21 +116,18 @@ app.post("/order-book", async (req, res) => {
     const order = await orderRes.json();
     if (!orderRes.ok) throw new Error(JSON.stringify(order));
 
-    const contentUploadUrl = order.items?.[0]?.files?.content?.uploadUrl;
-    const coverUploadUrl   = order.items?.[0]?.files?.cover?.uploadUrl;
+    const contentUploadUrl = order.items[0].files.content.uploadUrl;
+    const coverUploadUrl   = order.items[0].files.cover.uploadUrl;
 
-    if (!contentUploadUrl) throw new Error("PrintAPI content uploadUrl fehlt");
-    if (!coverUploadUrl) throw new Error("PrintAPI cover uploadUrl fehlt");
-
-    // 2) PDFs aus Supabase laden
+    // 2️⃣ PDFs aus Supabase laden
     const contentBuffer = await downloadPdfFromSupabase(contentPath);
     const coverBuffer   = await downloadPdfFromSupabase(coverPath);
 
-    // 3) Beide PDFs zu PrintAPI hochladen
-    await putPdfToPrintApi(contentUploadUrl, contentBuffer);
-    await putPdfToPrintApi(coverUploadUrl, coverBuffer);
+    // 3️⃣ PDFs korrekt zu PrintAPI hochladen
+    await uploadPdfToPrintApi(contentUploadUrl, contentBuffer, "content.pdf");
+    await uploadPdfToPrintApi(coverUploadUrl, coverBuffer, "cover.pdf");
 
-    // 4) Checkout zurückgeben
+    // 4️⃣ Checkout zurückgeben
     res.json({
       orderId: order.id,
       checkoutUrl: order.checkout.setupUrl
@@ -134,15 +138,14 @@ app.post("/order-book", async (req, res) => {
   }
 });
 
-// OPTIONAL: Products debug
+// ================= PRODUCTS DEBUG =================
 app.get("/products", async (req, res) => {
   try {
     const token = await getAccessToken();
     const r = await fetch("https://test.printapi.nl/v2/products", {
       headers: { "Authorization": `Bearer ${token}` }
     });
-    const json = await r.json();
-    res.json(json);
+    res.json(await r.json());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

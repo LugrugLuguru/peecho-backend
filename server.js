@@ -139,11 +139,12 @@ app.post("/order-book", async (req, res) => {
     // 5) Create a public checkout link for this order
     // Try POST /v2/checkout with orderId (returns setup/payment URL)
     const checkoutBody = {
-      orderId: orderJson.id,
-      // optional: set your return/cancel URLs via env or defaults
-      returnUrl: process.env.CHECKOUT_RETURN_URL || "https://example.com/success",
-      cancelUrl: process.env.CHECKOUT_CANCEL_URL || "https://example.com/cancel"
-    };
+  orderId: orderJson.id,
+  type: "payment", // 🔴 WICHTIG
+  returnUrl: process.env.CHECKOUT_RETURN_URL || "https://example.com/success",
+  cancelUrl: process.env.CHECKOUT_CANCEL_URL || "https://example.com/cancel"
+};
+
 
     const checkoutRes = await fetch("https://test.printapi.nl/v2/checkout", {
       method: "POST",
@@ -164,41 +165,22 @@ app.post("/order-book", async (req, res) => {
 
     // If POST /v2/checkout succeeded and returned a public URL, return it
     if (checkoutRes.ok) {
-      const checkoutUrl = checkoutJson?.paymentUrl || checkoutJson?.setupUrl || checkoutJson?.url || null;
+      const checkoutUrl = checkoutJson?.paymentUrl ?? null;
       if (checkoutUrl) {
         return res.json({ orderId: orderJson.id, checkoutUrl });
       }
       // fallback: continue to fetch the order to look for checkout info
     }
 
-    // Fallback: GET the full order and look for checkout.paymentUrl or checkout.setupUrl
-    const orderFetch = await fetch(`https://test.printapi.nl/v2/orders/${orderJson.id}`, {
-      method: "GET",
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Accept": "application/json"
-      }
-    });
-    const fullOrderJson = await orderFetch.json();
 
-    const fallbackCheckoutUrl =
-      fullOrderJson?.checkout?.paymentUrl ||
-      fullOrderJson?.checkout?.setupUrl ||
-      fullOrderJson?.checkout?.url ||
-      null;
-
-    if (fallbackCheckoutUrl) {
-      return res.json({ orderId: orderJson.id, checkoutUrl: fallbackCheckoutUrl });
-    }
 
     // Nothing returned: give a helpful error payload (includes raw responses for debugging)
     return res.status(500).json({
-      error: "Backend hat keine checkoutUrl zurückgegeben",
-      orderId: orderJson.id,
-      orderResponse: orderJson,
-      checkoutAttempt: checkoutJson,
-      fullOrder: fullOrderJson
-    });
+  error: "PrintAPI hat keine paymentUrl zurückgegeben",
+  orderId: orderJson.id,
+  checkoutResponse: checkoutJson
+});
+
 
   } catch (e) {
     console.error("order-book error:", e);

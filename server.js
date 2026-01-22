@@ -86,7 +86,7 @@ app.post("/order-book", async (req, res) => {
     // 1) OAuth token
     const token = await getAccessToken();
 
-    // 2) Create order (request PrintAPI to create the order and provide uploadUrls)
+    // 2) Create order
     const orderRes = await fetch("https://test.printapi.nl/v2/orders", {
       method: "POST",
       headers: {
@@ -115,78 +115,68 @@ app.post("/order-book", async (req, res) => {
 
     const orderJson = await orderRes.json();
     if (!orderRes.ok) {
-      return res.status(orderRes.status).json({ error: orderJson });
+      return res.status(orderRes.status).json(orderJson);
     }
 
     const contentUploadUrl = orderJson.items?.[0]?.files?.content?.uploadUrl;
     const coverUploadUrl   = orderJson.items?.[0]?.files?.cover?.uploadUrl;
 
     if (!contentUploadUrl || !coverUploadUrl) {
-      return res.status(500).json({
-        error: "Missing uploadUrl(s)",
-        raw: orderJson
-      });
+      return res.status(500).json({ error: "Upload URLs fehlen", raw: orderJson });
     }
 
-    // 3) Download PDFs from signed URLs (from Supabase)
+    // 3) Download PDFs
     const contentBuffer = await downloadPdfFromUrl(contentUrl);
     const coverBuffer   = await downloadPdfFromUrl(coverUrl);
 
-    // 4) Upload to PrintAPI (POST application/pdf with Bearer token)
+    // 4) Upload PDFs
     await uploadPdfToPrintApi(contentUploadUrl, contentBuffer, token);
     await uploadPdfToPrintApi(coverUploadUrl, coverBuffer, token);
 
-    // 5) Create payment link via checkout.setupUrl (DOCS-KORREKT)
-const setupUrl = orderJson.checkout?.setupUrl;
-
-if (!setupUrl) {
-  return res.status(500).json({
-    error: "Order enthält keine checkout.setupUrl",
-    orderResponse: orderJson
-  });
-}
-
-const checkoutRes = await fetch(setupUrl, {
-  method: "POST",
-  headers: {
-    "Authorization": `Bearer ${token}`,
-    "Content-Type": "application/json",
-    "Accept": "application/json"
-  },
-  body: JSON.stringify({
-    returnUrl: process.env.CHECKOUT_RETURN_URL || "https://example.com/success",
-    billingAddress: {
-      name: "Max Mustermann",
-      line1: "Musterstraße 1",
-      postCode: "12345",
-      city: "Musterstadt",
-      country: "DE"
+    // 5) Create payment link (CORRECT WAY)
+    const setupUrl = orderJson.checkout?.setupUrl;
+    if (!setupUrl) {
+      return res.status(500).json({ error: "checkout.setupUrl fehlt", raw: orderJson });
     }
-  })
+
+    const checkoutRes = await fetch(setupUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({
+        returnUrl: process.env.CHECKOUT_RETURN_URL || "https://example.com/success",
+        billingAddress: {
+          name: "Max Mustermann",
+          line1: "Musterstraße 1",
+          postCode: "12345",
+          city: "Musterstadt",
+          country: "DE"
+        }
+      })
+    });
+
+    const checkoutJson = await checkoutRes.json();
+    if (!checkoutRes.ok || !checkoutJson.paymentUrl) {
+      return res.status(500).json({
+        error: "Payment-Link konnte nicht erstellt werden",
+        checkoutJson
+      });
+    }
+
+    // 6) DONE
+    return res.json({
+      orderId: orderJson.id,
+      checkoutUrl: checkoutJson.paymentUrl
+    });
+
+  } catch (e) {
+    console.error("order-book error:", e);
+    return res.status(500).json({ error: e.message });
+  }
 });
-
-const checkoutJson = await checkoutRes.json();
-
-if (!checkoutRes.ok) {
-  return res.status(500).json({
-    error: "Checkout-Setup fehlgeschlagen",
-    checkoutResponse: checkoutJson
-  });
-}
-
-const paymentUrl = checkoutJson?.paymentUrl;
-if (!paymentUrl) {
-  return res.status(500).json({
-    error: "PrintAPI hat keine paymentUrl zurückgegeben",
-    checkoutResponse: checkoutJson
-  });
-}
-
-return res.json({
-  orderId: orderJson.id,
-  checkoutUrl: paymentUrl
-});
-
 
 // --------------------
 const PORT = process.env.PORT || 3000;

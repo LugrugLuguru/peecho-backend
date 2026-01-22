@@ -41,14 +41,37 @@ async function getAccessToken() {
   return cachedToken;
 }
 
+async function downloadPdfFromSupabase(path) {
+  const { data, error } = await supabase
+    .storage
+    .from("print-files")
+    .download(path);
+
+  if (error) throw error;
+
+  return Buffer.from(await data.arrayBuffer());
+}
+
+async function putPdfToPrintApi(uploadUrl, pdfBuffer) {
+  const r = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": "application/pdf" },
+    body: pdfBuffer
+  });
+
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`Upload to PrintAPI failed (${r.status}): ${t}`);
+  }
+}
+
 // ================= ORDER + PDF UPLOAD =================
 app.post("/order-book", async (req, res) => {
   try {
-    const { supabasePath, pageCount } = req.body;
+    const { contentPath, coverPath, pageCount } = req.body;
 
-    if (!supabasePath) {
-      return res.status(400).json({ error: "supabasePath fehlt" });
-    }
+    if (!contentPath) return res.status(400).json({ error: "contentPath fehlt" });
+    if (!coverPath) return res.status(400).json({ error: "coverPath fehlt" });
 
     const pc = Number(pageCount);
     if (!pc || pc < 1) {
@@ -57,7 +80,7 @@ app.post("/order-book", async (req, res) => {
 
     const token = await getAccessToken();
 
-    // 1️⃣ Order erstellen (DIN A4 Hardcover Buch)
+    // 1) Order erstellen
     const orderRes = await fetch("https://test.printapi.nl/v2/orders", {
       method: "POST",
       headers: {
@@ -86,30 +109,21 @@ app.post("/order-book", async (req, res) => {
     const order = await orderRes.json();
     if (!orderRes.ok) throw new Error(JSON.stringify(order));
 
-    const uploadUrl = order.items[0].files.content.uploadUrl;
+    const contentUploadUrl = order.items?.[0]?.files?.content?.uploadUrl;
+    const coverUploadUrl   = order.items?.[0]?.files?.cover?.uploadUrl;
 
-    // 2️⃣ PDF aus Supabase laden
-    const { data, error } = await supabase
-      .storage
-      .from("print-files")
-      .download(supabasePath);
+    if (!contentUploadUrl) throw new Error("PrintAPI content uploadUrl fehlt");
+    if (!coverUploadUrl) throw new Error("PrintAPI cover uploadUrl fehlt");
 
-    if (error) throw error;
+    // 2) PDFs aus Supabase laden
+    const contentBuffer = await downloadPdfFromSupabase(contentPath);
+    const coverBuffer   = await downloadPdfFromSupabase(coverPath);
 
-    const pdfBuffer = Buffer.from(await data.arrayBuffer());
+    // 3) Beide PDFs zu PrintAPI hochladen
+    await putPdfToPrintApi(contentUploadUrl, contentBuffer);
+    await putPdfToPrintApi(coverUploadUrl, coverBuffer);
 
-    // 3️⃣ PDF zu PrintAPI hochladen
-    const uploadRes = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: { "Content-Type": "application/pdf" },
-      body: pdfBuffer
-    });
-
-    if (!uploadRes.ok) {
-      throw new Error("PDF Upload fehlgeschlagen");
-    }
-
-    // 4️⃣ Checkout zurückgeben
+    // 4) Checkout zurückgeben
     res.json({
       orderId: order.id,
       checkoutUrl: order.checkout.setupUrl
@@ -120,24 +134,15 @@ app.post("/order-book", async (req, res) => {
   }
 });
 
-// PRODUCTS LISTE (optional zum debug)
+// OPTIONAL: Products debug
 app.get("/products", async (req, res) => {
   try {
     const token = await getAccessToken();
-
     const r = await fetch("https://test.printapi.nl/v2/products", {
-      method: "GET",
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Accept": "application/json"
-      }
+      headers: { "Authorization": `Bearer ${token}` }
     });
-
-    const text = await r.text();
-    let json;
-    try { json = JSON.parse(text); } catch { json = text; }
-
-    res.json({ status: r.status, response: json });
+    const json = await r.json();
+    res.json(json);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

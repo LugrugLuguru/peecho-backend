@@ -1,138 +1,147 @@
 import express from "express";
-import fetch from "node-fetch";
 import cors from "cors";
 import dotenv from "dotenv";
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
 const app = express();
+app.use(cors({ origin: "*", methods: ["POST", "GET"] }));
+app.use(express.json({ limit: "20mb" }));
 
-app.use(cors({
-  origin: "*",
-  methods: ["POST", "GET", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
+// ================= SUPABASE =================
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-app.use(express.json());
-
-// ============ Token Cache & Helper ============
+// ================= PRINTAPI TOKEN =================
 let cachedToken = null;
-let tokenExpiresAt = 0; // unix ms
+let tokenExpiresAt = 0;
 
 async function getAccessToken() {
-  // If user provided a ready-made bearer token in env (quick debug)
-  if (process.env.PRINTAPI_BEARER) {
-    return process.env.PRINTAPI_BEARER;
-  }
-
-  // reuse cached token when not expired (keep 60s buffer)
   const now = Date.now();
-  if (cachedToken && now < tokenExpiresAt - 60_000) {
-    return cachedToken;
-  }
+  if (cachedToken && now < tokenExpiresAt - 60_000) return cachedToken;
 
-  const clientId = process.env.PRINTAPI_CLIENT_ID;
-  const clientSecret = process.env.PRINTAPI_CLIENT_SECRET;
-
-  if (!clientId || !clientSecret) {
-    throw new Error("Weder PRINTAPI_BEARER noch PRINTAPI_CLIENT_ID/PRINTAPI_CLIENT_SECRET gesetzt");
-  }
-
-  const tokenUrl = "https://test.printapi.nl/v2/oauth";
-
-  const body = new URLSearchParams({
-    grant_type: "client_credentials",
-    client_id: clientId,
-    client_secret: clientSecret
-  });
-
-  const r = await fetch(tokenUrl, {
+  const r = await fetch("https://test.printapi.nl/v2/oauth", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded"
-    },
-    body: body.toString()
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: process.env.PRINTAPI_CLIENT_ID,
+      client_secret: process.env.PRINTAPI_CLIENT_SECRET
+    })
   });
 
-  const text = await r.text();
-  let json;
-  try { json = JSON.parse(text); } catch { json = { errorText: text }; }
-
-  if (!r.ok) {
-    const errMsg = json && json.error ? `${json.error}: ${json.error_description || ""}` : JSON.stringify(json);
-    throw new Error(`Token request failed (${r.status}): ${errMsg}`);
-  }
-
-  if (!json.access_token || !json.expires_in) {
-    throw new Error("Token response enthält kein access_token/expires_in: " + JSON.stringify(json));
-  }
+  const json = await r.json();
+  if (!r.ok) throw new Error(JSON.stringify(json));
 
   cachedToken = json.access_token;
-  tokenExpiresAt = Date.now() + (json.expires_in * 1000);
-
+  tokenExpiresAt = Date.now() + json.expires_in * 1000;
   return cachedToken;
 }
 
-// ✅ Test-Route (die du gerade benutzt hast)
-app.post("/test", (req, res) => {
-  res.json({
-    ok: true,
-    message: "Backend erreichbar",
-    received: req.body
-  });
-});
-
-// 🔴 PRINTAPI TEST (verwendet OAuth-Token)
-app.post("/print-test", async (req, res) => {
+// ================= ORDER + PDF UPLOAD =================
+app.post("/order-book", async (req, res) => {
   try {
-    // Hol Access-Token (oder verwende PRINTAPI_BEARER)
+    const { supabasePath, pageCount } = req.body;
+
+    if (!supabasePath) {
+      return res.status(400).json({ error: "supabasePath fehlt" });
+    }
+
+    const pc = Number(pageCount);
+    if (!pc || pc < 1) {
+      return res.status(400).json({ error: "pageCount fehlt oder ist ungültig" });
+    }
+
     const token = await getAccessToken();
 
-    const apiUrl = "https://test.printapi.nl/v2/orders";
-
-    const orderPayload = {
-      email: "testkunde@example.com",
-      items: [{
-        productId: "poster_a4_sta",
-        quantity: 1
-      }],
-      shipping: {
-        address: {
-          name: "Max Mustermann",
-          line1: "Musterstraße 1",
-          postCode: "12345",
-          city: "Musterstadt",
-          country: "DE"
-        }
-      }
-    };
-
-    const r = await fetch(apiUrl, {
+    // 1️⃣ Order erstellen (DIN A4 Hardcover Buch)
+    const orderRes = await fetch("https://test.printapi.nl/v2/orders", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${token}`,
-        "Content-Type": "application/json",
-        "Accept": "application/json"
+        "Content-Type": "application/json"
       },
-      body: JSON.stringify(orderPayload)
+      body: JSON.stringify({
+        email: "kunde@example.com",
+        items: [{
+          productId: "boek_hc_a4_sta",
+          quantity: 1,
+          pageCount: pc
+        }],
+        shipping: {
+          address: {
+            name: "Max Mustermann",
+            line1: "Musterstraße 1",
+            postCode: "12345",
+            city: "Musterstadt",
+            country: "DE"
+          }
+        }
+      })
+    });
+
+    const order = await orderRes.json();
+    if (!orderRes.ok) throw new Error(JSON.stringify(order));
+
+    const uploadUrl = order.items[0].files.content.uploadUrl;
+
+    // 2️⃣ PDF aus Supabase laden
+    const { data, error } = await supabase
+      .storage
+      .from("print-files")
+      .download(supabasePath);
+
+    if (error) throw error;
+
+    const pdfBuffer = Buffer.from(await data.arrayBuffer());
+
+    // 3️⃣ PDF zu PrintAPI hochladen
+    const uploadRes = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Type": "application/pdf" },
+      body: pdfBuffer
+    });
+
+    if (!uploadRes.ok) {
+      throw new Error("PDF Upload fehlgeschlagen");
+    }
+
+    // 4️⃣ Checkout zurückgeben
+    res.json({
+      orderId: order.id,
+      checkoutUrl: order.checkout.setupUrl
+    });
+
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PRODUCTS LISTE (optional zum debug)
+app.get("/products", async (req, res) => {
+  try {
+    const token = await getAccessToken();
+
+    const r = await fetch("https://test.printapi.nl/v2/products", {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/json"
+      }
     });
 
     const text = await r.text();
     let json;
-    try { json = JSON.parse(text); } catch { json = text }
+    try { json = JSON.parse(text); } catch { json = text; }
 
-    res.json({
-      status: r.status,
-      response: json
-    });
-
+    res.json({ status: r.status, response: json });
   } catch (e) {
-    // ausführliche Fehlermeldung (hilft bei Debugging)
     res.status(500).json({ error: e.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("Server läuft auf Port", PORT);
-});
+app.listen(PORT, () => console.log("Server läuft"));

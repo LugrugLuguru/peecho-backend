@@ -16,7 +16,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// ================= PRINTAPI TOKEN CACHE =================
+// ================= PRINTAPI TOKEN =================
 let cachedToken = null;
 let tokenExpiresAt = 0;
 
@@ -35,7 +35,7 @@ async function getAccessToken() {
   });
 
   const json = await r.json();
-  if (!r.ok) throw new Error(`Token error: ${JSON.stringify(json)}`);
+  if (!r.ok) throw new Error(JSON.stringify(json));
 
   cachedToken = json.access_token;
   tokenExpiresAt = Date.now() + json.expires_in * 1000;
@@ -43,7 +43,7 @@ async function getAccessToken() {
 }
 
 // ================= HELPERS =================
-async function downloadPdfFromSupabase(path) {
+async function downloadPdf(path) {
   const { data, error } = await supabase
     .storage
     .from("print-files")
@@ -53,27 +53,17 @@ async function downloadPdfFromSupabase(path) {
   return Buffer.from(await data.arrayBuffer());
 }
 
-/**
- * Upload a PDF to the PrintAPI uploadUrl using POST multipart/form-data.
- * We include the Authorization header (Bearer token) because PrintAPI requires it.
- */
-async function uploadPdfToPrintApi(uploadUrl, pdfBuffer, filename, bearerToken) {
+async function uploadPdf(uploadUrl, buffer, filename) {
   const form = new FormData();
-  form.append("file", pdfBuffer, {
+  form.append("file", buffer, {
     filename,
     contentType: "application/pdf"
   });
 
-  // Merge form headers and add Authorization
-  const headers = {
-    ...form.getHeaders(),
-    Authorization: `Bearer ${bearerToken}`
-  };
-
   const r = await fetch(uploadUrl, {
     method: "POST",
     body: form,
-    headers
+    headers: form.getHeaders() // ❗ KEIN Authorization
   });
 
   if (!r.ok) {
@@ -82,23 +72,20 @@ async function uploadPdfToPrintApi(uploadUrl, pdfBuffer, filename, bearerToken) 
   }
 }
 
-// ================= ORDER + PDF UPLOAD =================
+// ================= ORDER =================
 app.post("/order-book", async (req, res) => {
   try {
     const { contentPath, coverPath, pageCount } = req.body;
 
-    if (!contentPath) return res.status(400).json({ error: "contentPath fehlt" });
-    if (!coverPath) return res.status(400).json({ error: "coverPath fehlt" });
+    if (!contentPath) throw new Error("contentPath fehlt");
+    if (!coverPath) throw new Error("coverPath fehlt");
 
     const pc = Number(pageCount);
-    if (!pc || pc < 1) {
-      return res.status(400).json({ error: "pageCount fehlt oder ist ungültig" });
-    }
+    if (!pc || pc < 1) throw new Error("pageCount ungültig");
 
-    // get token (we will use the same token also for uploads)
     const token = await getAccessToken();
 
-    // 1) Order anlegen
+    // 1️⃣ Order anlegen
     const orderRes = await fetch("https://test.printapi.nl/v2/orders", {
       method: "POST",
       headers: {
@@ -125,40 +112,36 @@ app.post("/order-book", async (req, res) => {
     });
 
     const order = await orderRes.json();
-    if (!orderRes.ok) throw new Error(`Order error: ${JSON.stringify(order)}`);
+    if (!orderRes.ok) throw new Error(JSON.stringify(order));
 
-    const contentUploadUrl = order.items?.[0]?.files?.content?.uploadUrl;
-    const coverUploadUrl   = order.items?.[0]?.files?.cover?.uploadUrl;
+    const contentUrl = order.items[0].files.content.uploadUrl;
+    const coverUrl   = order.items[0].files.cover.uploadUrl;
 
-    if (!contentUploadUrl) throw new Error("PrintAPI content uploadUrl fehlt");
-    if (!coverUploadUrl) throw new Error("PrintAPI cover uploadUrl fehlt");
+    // 2️⃣ PDFs laden
+    const contentPdf = await downloadPdf(contentPath);
+    const coverPdf   = await downloadPdf(coverPath);
 
-    // 2) PDFs aus Supabase laden
-    const contentBuffer = await downloadPdfFromSupabase(contentPath);
-    const coverBuffer   = await downloadPdfFromSupabase(coverPath);
+    // 3️⃣ Uploads (STABIL)
+    await uploadPdf(contentUrl, contentPdf, "content.pdf");
+    await uploadPdf(coverUrl, coverPdf, "cover.pdf");
 
-    // 3) PDFs korrekt zu PrintAPI hochladen (POST multipart/form-data + Authorization)
-    await uploadPdfToPrintApi(contentUploadUrl, contentBuffer, "content.pdf", token);
-    await uploadPdfToPrintApi(coverUploadUrl, coverBuffer, "cover.pdf", token);
-
-    // 4) Checkout zurückgeben
+    // 4️⃣ Checkout
     res.json({
       orderId: order.id,
       checkoutUrl: order.checkout.setupUrl
     });
 
   } catch (e) {
-    // ausführliche Fehlermeldung im JSON body
     res.status(500).json({ error: e.message });
   }
 });
 
-// Produkte debug endpoint (optional)
+// ================= DEBUG =================
 app.get("/products", async (req, res) => {
   try {
     const token = await getAccessToken();
     const r = await fetch("https://test.printapi.nl/v2/products", {
-      headers: { "Authorization": `Bearer ${token}` }
+      headers: { Authorization: `Bearer ${token}` }
     });
     res.json(await r.json());
   } catch (e) {
@@ -167,4 +150,4 @@ app.get("/products", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server läuft"));
+app.listen(PORT, () => console.log("✅ Server läuft"));

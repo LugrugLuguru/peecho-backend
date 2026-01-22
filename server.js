@@ -136,57 +136,57 @@ app.post("/order-book", async (req, res) => {
     await uploadPdfToPrintApi(contentUploadUrl, contentBuffer, token);
     await uploadPdfToPrintApi(coverUploadUrl, coverBuffer, token);
 
-    // 5) Create a public checkout link for this order
-    // Try POST /v2/checkout with orderId (returns setup/payment URL)
-    const checkoutBody = {
-  orderId: orderJson.id,
-  type: "payment", // 🔴 WICHTIG
-  returnUrl: process.env.CHECKOUT_RETURN_URL || "https://example.com/success",
-  cancelUrl: process.env.CHECKOUT_CANCEL_URL || "https://example.com/cancel"
-};
+    // 5) Create payment link via checkout.setupUrl (DOCS-KORREKT)
+const setupUrl = orderJson.checkout?.setupUrl;
 
+if (!setupUrl) {
+  return res.status(500).json({
+    error: "Order enthält keine checkout.setupUrl",
+    orderResponse: orderJson
+  });
+}
 
-    const checkoutRes = await fetch("https://test.printapi.nl/v2/checkout", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-      },
-      body: JSON.stringify(checkoutBody)
-    });
-
-    let checkoutJson = null;
-    try {
-      checkoutJson = await checkoutRes.json();
-    } catch (err) {
-      checkoutJson = null;
+const checkoutRes = await fetch(setupUrl, {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+    "Accept": "application/json"
+  },
+  body: JSON.stringify({
+    returnUrl: process.env.CHECKOUT_RETURN_URL || "https://example.com/success",
+    billingAddress: {
+      name: "Max Mustermann",
+      line1: "Musterstraße 1",
+      postCode: "12345",
+      city: "Musterstadt",
+      country: "DE"
     }
-
-    // If POST /v2/checkout succeeded and returned a public URL, return it
-    if (checkoutRes.ok) {
-      const checkoutUrl = checkoutJson?.paymentUrl ?? null;
-      if (checkoutUrl) {
-        return res.json({ orderId: orderJson.id, checkoutUrl });
-      }
-      // fallback: continue to fetch the order to look for checkout info
-    }
-
-
-
-    // Nothing returned: give a helpful error payload (includes raw responses for debugging)
-    return res.status(500).json({
-  error: "PrintAPI hat keine paymentUrl zurückgegeben",
-  orderId: orderJson.id,
-  checkoutResponse: checkoutJson
+  })
 });
 
+const checkoutJson = await checkoutRes.json();
 
-  } catch (e) {
-    console.error("order-book error:", e);
-    return res.status(500).json({ error: e.message || String(e) });
-  }
+if (!checkoutRes.ok) {
+  return res.status(500).json({
+    error: "Checkout-Setup fehlgeschlagen",
+    checkoutResponse: checkoutJson
+  });
+}
+
+const paymentUrl = checkoutJson?.paymentUrl;
+if (!paymentUrl) {
+  return res.status(500).json({
+    error: "PrintAPI hat keine paymentUrl zurückgegeben",
+    checkoutResponse: checkoutJson
+  });
+}
+
+return res.json({
+  orderId: orderJson.id,
+  checkoutUrl: paymentUrl
 });
+
 
 // --------------------
 const PORT = process.env.PORT || 3000;

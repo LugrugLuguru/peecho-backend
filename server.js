@@ -10,7 +10,7 @@ app.use(cors({ origin: "*", methods: ["POST", "GET"] }));
 app.use(express.json({ limit: "30mb" }));
 
 // --------------------
-// Konfiguration
+// Config
 // --------------------
 const PEECHO_API_KEY = process.env.PEECHO_API_KEY;
 const PEECHO_PRODUCT_ID = process.env.PEECHO_PRODUCT_ID || "boek_hc_a4_sta";
@@ -18,13 +18,19 @@ const PEECHO_BASE = "https://test.www.peecho.com/rest/v3";
 const CHECKOUT_RETURN_URL =
   process.env.CHECKOUT_RETURN_URL || "https://example.com/success";
 
-if (!PEECHO_API_KEY) {
-  console.warn("⚠️ PEECHO_API_KEY ist nicht gesetzt");
-}
-
 // --------------------
 // Helpers
 // --------------------
+async function safeJson(res) {
+  const text = await res.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
 async function downloadPdfFromUrl(url) {
   const r = await fetch(url);
   if (!r.ok) {
@@ -37,17 +43,23 @@ async function downloadPdfFromUrl(url) {
 async function uploadPdfToPeecho(uploadUrl, pdfBuffer) {
   const r = await fetch(uploadUrl, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/pdf"
-    },
+    headers: { "Content-Type": "application/pdf" },
     body: pdfBuffer
   });
 
+  // ⬅️ WICHTIG: KEIN r.json() hier!
   if (!r.ok) {
     const t = await r.text().catch(() => "");
     throw new Error(`Upload to Peecho failed (${r.status}): ${t}`);
   }
 }
+
+// --------------------
+// Healthcheck (sehr hilfreich)
+// --------------------
+app.get("/", (req, res) => {
+  res.send("peecho-backend alive ✅");
+});
 
 // --------------------
 // Order endpoint
@@ -64,17 +76,13 @@ app.post("/order-book", async (req, res) => {
       return res.status(400).json({ error: "pageCount ungültig" });
     }
 
-    if (!PEECHO_API_KEY) {
-      return res.status(500).json({ error: "PEECHO_API_KEY fehlt" });
-    }
-
-    // 1) Order anlegen
+    // 1) Create order
     const orderRes = await fetch(`${PEECHO_BASE}/orders/`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${PEECHO_API_KEY}`,
+        Authorization: `Bearer ${PEECHO_API_KEY}`,
         "Content-Type": "application/json",
-        "Accept": "application/json"
+        Accept: "application/json"
       },
       body: JSON.stringify({
         email: "kunde@example.com",
@@ -97,9 +105,12 @@ app.post("/order-book", async (req, res) => {
       })
     });
 
-    const orderJson = await orderRes.json();
+    const orderJson = await safeJson(orderRes);
     if (!orderRes.ok) {
-      return res.status(orderRes.status).json(orderJson);
+      return res.status(orderRes.status).json({
+        error: "Peecho order failed",
+        details: orderJson
+      });
     }
 
     const contentUploadUrl =
@@ -114,15 +125,15 @@ app.post("/order-book", async (req, res) => {
       });
     }
 
-    // 2) PDFs laden
+    // 2) Download PDFs
     const contentBuffer = await downloadPdfFromUrl(contentUrl);
     const coverBuffer = await downloadPdfFromUrl(coverUrl);
 
-    // 3) PDFs hochladen
+    // 3) Upload PDFs
     await uploadPdfToPeecho(contentUploadUrl, contentBuffer);
     await uploadPdfToPeecho(coverUploadUrl, coverBuffer);
 
-    // 4) Checkout Setup
+    // 4) Checkout
     const setupUrl = orderJson.checkout?.setupUrl;
     if (!setupUrl) {
       return res.status(500).json({
@@ -134,9 +145,9 @@ app.post("/order-book", async (req, res) => {
     const checkoutRes = await fetch(setupUrl, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${PEECHO_API_KEY}`,
+        Authorization: `Bearer ${PEECHO_API_KEY}`,
         "Content-Type": "application/json",
-        "Accept": "application/json"
+        Accept: "application/json"
       },
       body: JSON.stringify({
         returnUrl: CHECKOUT_RETURN_URL,
@@ -150,11 +161,11 @@ app.post("/order-book", async (req, res) => {
       })
     });
 
-    const checkoutJson = await checkoutRes.json();
+    const checkoutJson = await safeJson(checkoutRes);
     if (!checkoutRes.ok || !checkoutJson.paymentUrl) {
       return res.status(500).json({
-        error: "Payment-Link konnte nicht erstellt werden",
-        checkoutJson
+        error: "Payment-Link fehlgeschlagen",
+        raw: checkoutJson
       });
     }
 

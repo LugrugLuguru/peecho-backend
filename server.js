@@ -2,27 +2,42 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import multer from "multer";
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
 const app = express();
 app.use(cors({ origin: "*", methods: ["POST", "GET"] }));
-app.use(express.json({ limit: "30mb" }));
+app.use(express.json({ limit: "50mb" }));
 
 // --------------------
-// Config (ENV)
+// Env / Config
 const PEECHO_API_KEY = process.env.PEECHO_API_KEY;
-const PEECHO_PRODUCT_ID = process.env.PEECHO_PRODUCT_ID; // musst du in Render setzen
+const PEECHO_PRODUCT_ID = process.env.PEECHO_PRODUCT_ID;
 const PEECHO_BASE = "https://test.www.peecho.com/rest/v3";
 const CHECKOUT_RETURN_URL =
   process.env.CHECKOUT_RETURN_URL || "https://example.com/success";
 
-if (!PEECHO_API_KEY) {
-  console.warn("⚠️ WARN: PEECHO_API_KEY ist nicht gesetzt");
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+
+// Admin supabase client (Service Role Key) — used for backend uploads and signed URL creation
+let supabaseAdmin = null;
+if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
+  supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+    auth: { persistSession: false }
+  });
+} else {
+  console.warn("⚠️ SUPABASE_URL or SUPABASE_SERVICE_KEY not set — backend upload endpoint will fail.");
 }
-if (!PEECHO_PRODUCT_ID) {
-  console.warn("⚠️ WARN: PEECHO_PRODUCT_ID ist nicht gesetzt");
-}
+
+if (!PEECHO_API_KEY) console.warn("⚠️ PEECHO_API_KEY not set.");
+if (!PEECHO_PRODUCT_ID) console.warn("⚠️ PEECHO_PRODUCT_ID not set.");
+
+// --------------------
+// Multer (in-memory)
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } }); // 200MB max
 
 // --------------------
 // Helpers
@@ -72,13 +87,52 @@ app.get("/", (req, res) => {
 });
 
 // --------------------
-// Try creating order using different payload shapes.
-// 1) items[].file_details [{url, name, contentType}]
-// 2) items[].files [{url, name, contentType}]
-// 3) create order without files (async flow) and use uploadUrl returned by Peecho
-// Returns: { orderJson, methodUsed: "file_details"|"files"|"async", uploadUrl? }
+// Endpoint: Backend upload fallback (frontend -> backend -> supabase storage)
+app.post("/upload-via-backend", upload.single("file"), async (req, res) => {
+  try {
+    if (!supabaseAdmin) return res.status(500).json({ error: "Supabase admin client not configured" });
+    if (!req.file) return res.status(400).json({ error: "No file provided" });
+
+    const userId = req.body.userId || "anonymous";
+    const filename = req.file.originalname || "upload.pdf";
+    const ext = filename.split(".").pop() || "pdf";
+    const path = `${userId}/content-${cryptoRandomId()}.${ext}`;
+
+    // Upload buffer to Supabase storage (bucket: print-files)
+    const { error: upErr } = await supabaseAdmin.storage.from("print-files").upload(path, req.file.buffer, {
+      contentType: req.file.mimetype || "application/pdf",
+      upsert: false
+    });
+
+    if (upErr) {
+      console.error("Supabase admin upload error:", upErr);
+      return res.status(500).json({ error: "Supabase upload failed", details: upErr });
+    }
+
+    // Create signed URL (1 hour)
+    const expiresIn = 60 * 60;
+    const { data: signed, error: signErr } = await supabaseAdmin.storage.from("print-files").createSignedUrl(path, expiresIn);
+    if (signErr) {
+      console.error("Signed URL error:", signErr);
+      return res.status(500).json({ error: "Signed URL creation failed", details: signErr });
+    }
+
+    return res.json({ path, contentUrl: signed?.signedUrl });
+  } catch (e) {
+    console.error("/upload-via-backend error:", e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
+function cryptoRandomId() {
+  // simple random id (node global available)
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return (Date.now().toString(36) + Math.random().toString(36).substring(2, 10));
+}
+
+// --------------------
+// Peecho order helpers (same robust create with fallbacks)
 async function createPeechoOrderWithFallback(contentUrl, pageCount) {
-  // common order base
   const baseOrder = {
     email: "kunde@example.com",
     items: [
@@ -121,17 +175,13 @@ async function createPeechoOrderWithFallback(contentUrl, pageCount) {
     });
 
     const json1 = await safeJson(res1);
-    if (res1.ok) {
-      return { orderJson: json1, methodUsed: "file_details" };
-    } else {
-      // keep trying — but record the error
-      console.warn("peecho create order (file_details) failed:", res1.status, json1);
-    }
+    if (res1.ok) return { orderJson: json1, methodUsed: "file_details" };
+    console.warn("peecho create order (file_details) failed:", res1.status, json1);
   } catch (e) {
     console.warn("peecho create order (file_details) exception:", String(e));
   }
 
-  // attempt 2: try items[].files (alternate shape)
+  // attempt 2: items[].files
   try {
     const body2 = JSON.parse(JSON.stringify(baseOrder));
     body2.items[0].files = [
@@ -153,19 +203,14 @@ async function createPeechoOrderWithFallback(contentUrl, pageCount) {
     });
 
     const json2 = await safeJson(res2);
-    if (res2.ok) {
-      return { orderJson: json2, methodUsed: "files" };
-    } else {
-      console.warn("peecho create order (files) failed:", res2.status, json2);
-    }
+    if (res2.ok) return { orderJson: json2, methodUsed: "files" };
+    console.warn("peecho create order (files) failed:", res2.status, json2);
   } catch (e) {
     console.warn("peecho create order (files) exception:", String(e));
   }
 
-  // attempt 3: create order WITHOUT files (async), then use returned uploadUrl to PUT.
+  // attempt 3: async (no files), then expect uploadUrl back
   try {
-    const body3 = JSON.parse(JSON.stringify(baseOrder));
-    // leave file_details empty => asynchronous flow
     const res3 = await fetch(`${PEECHO_BASE}/orders/`, {
       method: "POST",
       headers: {
@@ -173,7 +218,7 @@ async function createPeechoOrderWithFallback(contentUrl, pageCount) {
         "Content-Type": "application/json",
         Accept: "application/json"
       },
-      body: JSON.stringify(body3)
+      body: JSON.stringify(baseOrder)
     });
 
     const json3 = await safeJson(res3);
@@ -182,7 +227,6 @@ async function createPeechoOrderWithFallback(contentUrl, pageCount) {
       return { orderJson: json3, methodUsed: "failed", status: res3.status };
     }
 
-    // try to extract uploadUrl (some Peecho deployments provide per-item upload URLs)
     const uploadUrl = json3.items?.[0]?.files?.file?.uploadUrl
       || json3.items?.[0]?.files?.content?.uploadUrl
       || json3.items?.[0]?.files?.cover?.uploadUrl
@@ -196,7 +240,7 @@ async function createPeechoOrderWithFallback(contentUrl, pageCount) {
 }
 
 // --------------------
-// Order endpoint: receives contentUrl (signed supabase url) + pageCount
+// Order endpoint (unchanged flow but uses helpers)
 app.post("/order-book", async (req, res) => {
   try {
     const { contentUrl, pageCount } = req.body;
@@ -208,7 +252,6 @@ app.post("/order-book", async (req, res) => {
       return res.status(500).json({ error: "Server misconfigured: PEECHO_API_KEY oder PEECHO_PRODUCT_ID fehlt" });
     }
 
-    // 1) Try to create order (prefer creating with file_details so Peecho fetches the file itself)
     const createResult = await createPeechoOrderWithFallback(contentUrl, pc);
 
     if (createResult.methodUsed === "failed") {
@@ -221,12 +264,9 @@ app.post("/order-book", async (req, res) => {
     const orderJson = createResult.orderJson;
     const methodUsed = createResult.methodUsed;
 
-    // If Peecho accepted file_details/files, we don't need to upload the file — Peecho will fetch/process it.
     if (methodUsed === "file_details" || methodUsed === "files") {
-      // proceed to checkout setup if available
       const setupUrl = orderJson.checkout?.setupUrl;
       if (!setupUrl) {
-        // return order for debugging
         return res.status(200).json({
           orderId: orderJson.id,
           info: "Order created but no checkout.setupUrl returned",
@@ -234,7 +274,6 @@ app.post("/order-book", async (req, res) => {
         });
       }
 
-      // create checkout (POST to setupUrl)
       const checkoutRes = await fetch(setupUrl, {
         method: "POST",
         headers: {
@@ -242,9 +281,7 @@ app.post("/order-book", async (req, res) => {
           "Content-Type": "application/json",
           Accept: "application/json"
         },
-        body: JSON.stringify({
-          returnUrl: CHECKOUT_RETURN_URL
-        })
+        body: JSON.stringify({ returnUrl: CHECKOUT_RETURN_URL })
       });
 
       const checkoutJson = await safeJson(checkoutRes);
@@ -255,42 +292,26 @@ app.post("/order-book", async (req, res) => {
         });
       }
 
-      return res.json({
-        orderId: orderJson.id,
-        checkoutUrl: checkoutJson.paymentUrl
-      });
+      return res.json({ orderId: orderJson.id, checkoutUrl: checkoutJson.paymentUrl });
     }
 
-    // methodUsed === "async": Peecho created order without files. We must upload file(s) ourselves.
+    // async flow:
     const uploadUrl = createResult.uploadUrl;
     if (!uploadUrl) {
-      // Maybe Peecho expects us to call a dedicated endpoint to set files asynchronously.
-      // Return the created order so you can inspect json in the client.
-      return res.status(500).json({
-        error: "Peecho created order in async mode but did not return an uploadUrl (inspect orderJson)",
-        raw: orderJson
-      });
+      return res.status(500).json({ error: "Peecho async order: uploadUrl fehlt", raw: orderJson });
     }
 
-    // 2) Download the PDF from contentUrl
     const pdfBuffer = await downloadPdfFromUrl(contentUrl);
 
-    // 3) Upload (PUT) the PDF to uploadUrl
-    // Some providers require PUT, others POST — try PUT first, fallback to POST.
     try {
       await putPdfToUrl(uploadUrl, pdfBuffer, "PUT");
     } catch (ePut) {
-      // fallback to POST
       await putPdfToUrl(uploadUrl, pdfBuffer, "POST");
     }
 
-    // 4) After upload, try to create the checkout (setupUrl)
     const setupUrl = orderJson.checkout?.setupUrl;
     if (!setupUrl) {
-      return res.status(500).json({
-        error: "checkout.setupUrl fehlt nach async upload",
-        raw: orderJson
-      });
+      return res.status(500).json({ error: "checkout.setupUrl fehlt nach async upload", raw: orderJson });
     }
 
     const checkoutRes = await fetch(setupUrl, {
@@ -300,25 +321,15 @@ app.post("/order-book", async (req, res) => {
         "Content-Type": "application/json",
         Accept: "application/json"
       },
-      body: JSON.stringify({
-        returnUrl: CHECKOUT_RETURN_URL
-      })
+      body: JSON.stringify({ returnUrl: CHECKOUT_RETURN_URL })
     });
 
     const checkoutJson = await safeJson(checkoutRes);
     if (!checkoutRes.ok || !checkoutJson.paymentUrl) {
-      return res.status(500).json({
-        error: "Payment-Link konnte nicht erstellt werden (async upload)",
-        raw: checkoutJson
-      });
+      return res.status(500).json({ error: "Payment-Link konnte nicht erstellt werden (async upload)", raw: checkoutJson });
     }
 
-    // Success
-    return res.json({
-      orderId: orderJson.id,
-      checkoutUrl: checkoutJson.paymentUrl
-    });
-
+    return res.json({ orderId: orderJson.id, checkoutUrl: checkoutJson.paymentUrl });
   } catch (e) {
     console.error("order-book error:", e);
     return res.status(500).json({ error: String(e) });

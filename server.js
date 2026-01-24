@@ -1,6 +1,5 @@
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -12,7 +11,6 @@ app.use(express.json());
 const PEECHO_API = "https://test.www.peecho.com";
 const PEECHO_API_KEY = process.env.PEECHO_API_KEY;
 
-// ✅ CHECKOUT = PUBLICATION
 app.post("/order-book", async (req, res) => {
   try {
     const { contentUrl, coverUrl, pageCount } = req.body;
@@ -21,9 +19,6 @@ app.post("/order-book", async (req, res) => {
       return res.status(400).json({ error: "Missing fields" });
     }
 
-    // 🔹 A4 Hardcover Book (Beispiel – MUSS zu deinem Account passen!)
-    const offeringId = "BOOK_HARDCOVER_A4";
-
     const payload = {
       title: "Mein A4 Hardcover Buch",
       description: "Gedruckt über Peecho API",
@@ -31,7 +26,7 @@ app.post("/order-book", async (req, res) => {
       currency: "EUR",
       products: [
         {
-          offering_id: offeringId,
+          offering_id: "BOOK_HARDCOVER_A4",
           page_count: pageCount,
           files: {
             interior: contentUrl,
@@ -63,17 +58,15 @@ app.post("/order-book", async (req, res) => {
     const publicationId = json.id;
     const checkoutUrl = `https://test.www.peecho.com/print/${publicationId}`;
 
-    res.json({
-      publicationId,
-      checkoutUrl
-    });
+    res.json({ publicationId, checkoutUrl });
 
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: "Server error", details: e.message });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error", details: err.message });
   }
 });
 
-app.listen(3000, () => {
-  console.log("✅ Peecho backend running on port 3000");
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("✅ Peecho backend running on port", PORT);
 });

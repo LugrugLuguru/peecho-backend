@@ -13,15 +13,15 @@ const PEECHO_API_KEY = process.env.PEECHO_API_KEY;
 
 app.post("/order-book", async (req, res) => {
   try {
-    const { contentUrl, coverUrl, pageCount } = req.body;
+    const { contentUrl, pageCount } = req.body;
 
-    if (!contentUrl || !coverUrl || !pageCount) {
+    if (!contentUrl || !pageCount) {
       return res.status(400).json({ error: "Missing fields" });
     }
 
     const payload = {
-      title: "Mein A4 Hardcover Buch",
-      description: "Gedruckt über Peecho API",
+      title: "Mein Buch",
+      description: "A4 Hardcover",
       language: "de",
       currency: "EUR",
       products: [
@@ -29,8 +29,7 @@ app.post("/order-book", async (req, res) => {
           offering_id: "BOOK_HARDCOVER_A4",
           page_count: pageCount,
           files: {
-            interior: contentUrl,
-            cover: coverUrl
+            interior: contentUrl
           }
         }
       ]
@@ -48,25 +47,22 @@ app.post("/order-book", async (req, res) => {
     const json = await r.json();
 
     if (!r.ok) {
-      console.error("Peecho error:", json);
+      console.error(json);
       return res.status(500).json({
-        error: "Peecho publication failed",
+        error: "Peecho order failed",
         details: json
       });
     }
 
-    const publicationId = json.id;
-    const checkoutUrl = `https://test.www.peecho.com/print/${publicationId}`;
-
-    res.json({ publicationId, checkoutUrl });
+    res.json({
+      publicationId: json.id,
+      checkoutUrl: `https://test.www.peecho.com/print/${json.id}`
+    });
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Server error", details: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("✅ Peecho backend running on port", PORT);
-});
+app.listen(process.env.PORT || 3000);

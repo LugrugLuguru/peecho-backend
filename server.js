@@ -13,7 +13,7 @@ app.use(express.json({ limit: "30mb" }));
 // Config
 // --------------------
 const PEECHO_API_KEY = process.env.PEECHO_API_KEY;
-const PEECHO_PRODUCT_ID = process.env.PEECHO_PRODUCT_ID || "boek_hc_a4_sta";
+const PEECHO_PRODUCT_ID = process.env.PEECHO_PRODUCT_ID; // MUSS gesetzt sein
 const PEECHO_BASE = "https://test.www.peecho.com/rest/v3";
 const CHECKOUT_RETURN_URL =
   process.env.CHECKOUT_RETURN_URL || "https://example.com/success";
@@ -42,12 +42,13 @@ async function downloadPdfFromUrl(url) {
 
 async function uploadPdfToPeecho(uploadUrl, pdfBuffer) {
   const r = await fetch(uploadUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/pdf" },
+    method: "PUT", // ⬅️ Peecho erwartet PUT
+    headers: {
+      "Content-Type": "application/pdf"
+    },
     body: pdfBuffer
   });
 
-  // ⬅️ WICHTIG: KEIN r.json() hier!
   if (!r.ok) {
     const t = await r.text().catch(() => "");
     throw new Error(`Upload to Peecho failed (${r.status}): ${t}`);
@@ -55,7 +56,7 @@ async function uploadPdfToPeecho(uploadUrl, pdfBuffer) {
 }
 
 // --------------------
-// Healthcheck (sehr hilfreich)
+// Healthcheck
 // --------------------
 app.get("/", (req, res) => {
   res.send("peecho-backend alive ✅");
@@ -66,17 +67,24 @@ app.get("/", (req, res) => {
 // --------------------
 app.post("/order-book", async (req, res) => {
   try {
-    const { contentUrl, coverUrl, pageCount } = req.body;
+    const { contentUrl, pageCount } = req.body;
 
-    if (!contentUrl) return res.status(400).json({ error: "contentUrl fehlt" });
-    if (!coverUrl) return res.status(400).json({ error: "coverUrl fehlt" });
+    if (!contentUrl) {
+      return res.status(400).json({ error: "contentUrl fehlt" });
+    }
 
     const pc = Number(pageCount);
     if (!pc || pc < 1) {
       return res.status(400).json({ error: "pageCount ungültig" });
     }
 
-    // 1) Create order
+    if (!PEECHO_API_KEY || !PEECHO_PRODUCT_ID) {
+      return res.status(500).json({
+        error: "PEECHO_API_KEY oder PEECHO_PRODUCT_ID fehlt"
+      });
+    }
+
+    // 1️⃣ Order anlegen (Buch = 1 Datei!)
     const orderRes = await fetch(`${PEECHO_BASE}/orders/`, {
       method: "POST",
       headers: {
@@ -113,27 +121,22 @@ app.post("/order-book", async (req, res) => {
       });
     }
 
-    const contentUploadUrl =
-      orderJson.items?.[0]?.files?.content?.uploadUrl;
-    const coverUploadUrl =
-      orderJson.items?.[0]?.files?.cover?.uploadUrl;
-
-    if (!contentUploadUrl || !coverUploadUrl) {
+    // ⬅️ WICHTIG: NUR EINE DATEI
+    const uploadUrl = orderJson.items?.[0]?.files?.file?.uploadUrl;
+    if (!uploadUrl) {
       return res.status(500).json({
-        error: "Upload URLs fehlen",
+        error: "uploadUrl fehlt (Peecho erwartet genau eine Datei)",
         raw: orderJson
       });
     }
 
-    // 2) Download PDFs
-    const contentBuffer = await downloadPdfFromUrl(contentUrl);
-    const coverBuffer = await downloadPdfFromUrl(coverUrl);
+    // 2️⃣ PDF laden
+    const pdfBuffer = await downloadPdfFromUrl(contentUrl);
 
-    // 3) Upload PDFs
-    await uploadPdfToPeecho(contentUploadUrl, contentBuffer);
-    await uploadPdfToPeecho(coverUploadUrl, coverBuffer);
+    // 3️⃣ PDF hochladen
+    await uploadPdfToPeecho(uploadUrl, pdfBuffer);
 
-    // 4) Checkout
+    // 4️⃣ Checkout erzeugen
     const setupUrl = orderJson.checkout?.setupUrl;
     if (!setupUrl) {
       return res.status(500).json({
@@ -150,21 +153,14 @@ app.post("/order-book", async (req, res) => {
         Accept: "application/json"
       },
       body: JSON.stringify({
-        returnUrl: CHECKOUT_RETURN_URL,
-        billingAddress: {
-          name: "Max Mustermann",
-          line1: "Musterstraße 1",
-          postCode: "12345",
-          city: "Musterstadt",
-          country: "DE"
-        }
+        returnUrl: CHECKOUT_RETURN_URL
       })
     });
 
     const checkoutJson = await safeJson(checkoutRes);
     if (!checkoutRes.ok || !checkoutJson.paymentUrl) {
       return res.status(500).json({
-        error: "Payment-Link fehlgeschlagen",
+        error: "Checkout fehlgeschlagen",
         raw: checkoutJson
       });
     }

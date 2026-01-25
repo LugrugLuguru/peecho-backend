@@ -13,8 +13,6 @@ const PEECHO_API_KEY = process.env.PEECHO_API_KEY;
 const PEECHO_OFFERING_ID = process.env.PEECHO_OFFERING_ID;
 
 // Endpoint für Publications (Checkout-Flow)
-// Dokumentation: POST /rest/publications erstellt ein Product Listing
-// Danach kann man zu /print/{id} redirecten für Checkout
 app.post("/order-book", async (req, res) => {
   try {
     const { contentUrl, pageCount } = req.body;
@@ -31,8 +29,6 @@ app.post("/order-book", async (req, res) => {
       return res.status(500).json({ error: "PEECHO_OFFERING_ID not configured" });
     }
 
-    // Laut API v3 Dokumentation: Product listing-publication
-    // Create a product listing that users can order via the Peecho Checkout
     const payload = {
       title: "A4 Hardcover Test",
       language: "de",
@@ -50,13 +46,12 @@ app.post("/order-book", async (req, res) => {
     };
 
     console.log("Sending to Peecho:", JSON.stringify(payload, null, 2));
-    console.log("Using API Key:", PEECHO_API_KEY ? "***" + PEECHO_API_KEY.slice(-4) : "MISSING");
 
     const r = await fetch(`${PEECHO_BASE}/rest/publications`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `ApiKey ${PEECHO_API_KEY}`
+        "X-API-Key": PEECHO_API_KEY   // ✅ KORREKT
       },
       body: JSON.stringify(payload)
     });
@@ -69,22 +64,12 @@ app.post("/order-book", async (req, res) => {
       return res.status(r.status).json({
         error: "Peecho publication creation failed",
         status: r.status,
-        body: text,
-        hint: "Check API key and offering_id in environment variables"
-      });
-    }
-
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch (e) {
-      return res.status(500).json({
-        error: "Invalid JSON response from Peecho",
         body: text
       });
     }
 
-    // Dokumentation: Nach Erstellung zu /print/{ID} für Checkout
+    const json = JSON.parse(text);
+
     res.json({
       orderId: json.id,
       checkoutUrl: `${PEECHO_BASE}/print/${json.id}`

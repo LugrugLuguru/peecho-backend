@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -5,19 +6,48 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+
+// --- Middlewares ---
+app.use(cors()); // einfache CORS-Unterstützung (preflight etc.)
+app.use(express.json({ limit: "10mb" })); // body parser, etwas großzügiger
+// Einfaches Request-Logging für Debugging:
+app.use((req, res, next) => {
+  console.log(`[REQ] ${new Date().toISOString()} -> ${req.method} ${req.originalUrl}`);
+  // show a subset of headers we care about (avoid dumping secrets)
+  const headersToLog = (({ host, origin, referer, "user-agent": ua, "content-type": ct }) => ({
+    host, origin, referer, "user-agent": ua, "content-type": ct
+  }))(req.headers);
+  console.log("[REQ-HEADERS]", headersToLog);
+  next();
+});
 
 const PEECHO_BASE = "https://test.www.peecho.com";
 const PEECHO_API_KEY = process.env.PEECHO_API_KEY;
 const PEECHO_OFFERING_ID = process.env.PEECHO_OFFERING_ID;
 
+// Preflight/OPTIONS für order-book explizit beantworten (sorgt für saubere CORS-Preflights)
+app.options("/order-book", cors());
+
+// Fallback: wenn andere Methoden auf /order-book ankommen, geben wir eine informative 405
+app.all("/order-book", (req, res, next) => {
+  if (req.method !== "POST") {
+    res.set("Allow", "POST, OPTIONS");
+    return res.status(405).json({
+      error: "Method Not Allowed on /order-book",
+      allowed: ["POST", "OPTIONS"],
+      receivedMethod: req.method
+    });
+  }
+  next();
+});
+
 // Endpoint für Publications (Checkout-Flow)
-// Dokumentation: POST /rest/publications erstellt ein Product Listing
-// Danach kann man zu /print/{id} redirecten für Checkout
 app.post("/order-book", async (req, res) => {
   try {
+    console.log("[/order-book] Handling POST");
+
     const { contentUrl, pageCount } = req.body;
+    console.log("[/order-book] body:", { pageCount, contentUrl: !!contentUrl });
 
     if (!contentUrl || !pageCount) {
       return res.status(400).json({ error: "Missing fields: contentUrl and pageCount required" });
@@ -31,8 +61,6 @@ app.post("/order-book", async (req, res) => {
       return res.status(500).json({ error: "PEECHO_OFFERING_ID not configured" });
     }
 
-    // Laut API v3 Dokumentation: Product listing-publication
-    // Create a product listing that users can order via the Peecho Checkout
     const payload = {
       title: "A4 Hardcover Test",
       language: "de",
@@ -52,11 +80,7 @@ app.post("/order-book", async (req, res) => {
     console.log("Sending to Peecho:", JSON.stringify(payload, null, 2));
     console.log("Using API Key:", PEECHO_API_KEY ? "***" + PEECHO_API_KEY.slice(-4) : "MISSING");
 
-    // -- WICHTIG: Zusätzliche Header für bessere Kompatibilität:
-    //  - Accept: application/json
-    //  - X-Api-Key: fallback header falls Peecho diese Variante erwartet
-    //  - User-Agent: einige APIs verlangen expliziten UA
-    const peechoUrl = `${PEECHO_BASE.replace(/\/$/, "")}/rest/publications/`; // trailing slash added
+    const peechoUrl = `${PEECHO_BASE.replace(/\/$/, "")}/rest/publications/`;
     const r = await fetch(peechoUrl, {
       method: "POST",
       headers: {
@@ -67,7 +91,6 @@ app.post("/order-book", async (req, res) => {
         "User-Agent": "peecho-integration/1.0 (+https://your-app.example)"
       },
       body: JSON.stringify(payload),
-      // credentials not needed for server-to-server
     });
 
     const text = await r.text();
@@ -79,7 +102,7 @@ app.post("/order-book", async (req, res) => {
         error: "Peecho publication creation failed",
         status: r.status,
         body: text,
-        hint: "Check API key and offering_id in environment variables (and that the API supports /rest/publications/). See Peecho API v3 doc."
+        hint: "Check API key and offering_id in environment variables (and that the API supports /rest/publications/). See Peecho API docs."
       });
     }
 
@@ -93,7 +116,6 @@ app.post("/order-book", async (req, res) => {
       });
     }
 
-    // Dokumentation: Nach Erstellung zu /print/{ID} für Checkout
     res.json({
       orderId: json.id,
       checkoutUrl: `${PEECHO_BASE.replace(/\/$/, "")}/print/${json.id}`

@@ -11,7 +11,7 @@ app.use(express.json());
 
 const PEECHO_BASE = process.env.PEECHO_BASE || "https://test.www.peecho.com";
 const PEECHO_API_KEY = process.env.PEECHO_API_KEY;
-const PEECHO_OFFERING_ID = process.env.PEECHO_OFFERING_ID || 0;
+const PEECHO_OFFERING_ID = Number(process.env.PEECHO_OFFERING_ID || 0);
 
 // --- kleines Request-Logging ---
 app.use((req, res, next) => {
@@ -20,104 +20,59 @@ app.use((req, res, next) => {
 });
 
 /**
- * 🔍 Probe-Endpunkt
- * Testet verschiedene Varianten von /rest/publications
- * ohne echte Bestellung
+ * ✅ Richtiger Probe-Endpunkt
+ * Testet POST /rest/print-jobs (kein echter Kauf)
  */
 app.get("/peecho-probe", async (req, res) => {
   try {
     if (!PEECHO_API_KEY) {
       return res.status(500).json({ error: "PEECHO_API_KEY not configured" });
     }
+    if (!PEECHO_OFFERING_ID) {
+      return res.status(500).json({ error: "PEECHO_OFFERING_ID not configured" });
+    }
+
+    const url = `${PEECHO_BASE.replace(/\/$/, "")}/rest/print-jobs`;
 
     const payload = {
-      title: "Probe Publication",
-      language: "de",
-      products: [
-        {
-          offering_id: Number(PEECHO_OFFERING_ID) || 1,
-          page_count: 2,
-          file_details: {
-            interior: {
-              url: "https://example.com/dummy.pdf"
-            }
-          }
+      offering_id: PEECHO_OFFERING_ID,
+      quantity: 1,
+      file_details: {
+        interior: {
+          // MUSS öffentlich erreichbar sein
+          url: "https://example.com/dummy.pdf"
         }
-      ]
+      },
+      shipping_address: {
+        country: "DE"
+      }
     };
 
-    const urls = [
-      `${PEECHO_BASE.replace(/\/$/, "")}/rest/publications`,
-      `${PEECHO_BASE.replace(/\/$/, "")}/rest/publications/`
-    ];
+    console.log("➡️ Peecho request payload:", payload);
 
-    const headerVariants = [
-      {
-        name: "Authorization ApiKey",
-        headers: {
-          "Authorization": `ApiKey ${PEECHO_API_KEY}`,
-          "Content-Type": "application/json",
-          "Accept": "application/json"
-        }
+    const r = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `ApiKey ${PEECHO_API_KEY}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
       },
-      {
-        name: "X-Api-Key",
-        headers: {
-          "X-Api-Key": PEECHO_API_KEY,
-          "Content-Type": "application/json",
-          "Accept": "application/json"
-        }
-      },
-      {
-        name: "Both",
-        headers: {
-          "Authorization": `ApiKey ${PEECHO_API_KEY}`,
-          "X-Api-Key": PEECHO_API_KEY,
-          "Content-Type": "application/json",
-          "Accept": "application/json"
-        }
-      }
-    ];
+      body: JSON.stringify(payload)
+    });
 
-    const results = [];
-
-    for (const url of urls) {
-      for (const hv of headerVariants) {
-        try {
-          const r = await fetch(url, {
-            method: "POST",
-            headers: hv.headers,
-            body: JSON.stringify(payload)
-          });
-
-          const text = await r.text();
-
-          results.push({
-            url,
-            headerVariant: hv.name,
-            status: r.status,
-            statusText: r.statusText,
-            body: text.slice(0, 500)
-          });
-        } catch (err) {
-          results.push({
-            url,
-            headerVariant: hv.name,
-            error: String(err)
-          });
-        }
-      }
-    }
+    const text = await r.text();
 
     res.json({
       peechoBase: PEECHO_BASE,
-      offeringId: PEECHO_OFFERING_ID,
-      results
+      endpoint: "/rest/print-jobs",
+      status: r.status,
+      statusText: r.statusText,
+      body: text.slice(0, 1000)
     });
 
   } catch (err) {
-    console.error("Probe error:", err);
-    res.status(500).json({ error: err.message });
+    console.error("❌ Peecho probe error:", err);
+    res.status(500).json({ error: String(err) });
   }
 });
 

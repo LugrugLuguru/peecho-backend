@@ -22,7 +22,7 @@ app.post("/api/order", async (req, res) => {
       merchant_api_key: process.env.PEECHO_API_KEY
     };
 
-    const response = await fetch("https://test.www.peecho.com/rest/v3/order", {
+    const response = await fetch("https://test.www.peecho.com/rest/v3/order/", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

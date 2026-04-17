@@ -1,5 +1,4 @@
 import express from "express";
-import fetch from "node-fetch";
 import cors from "cors";
 
 const app = express();
@@ -10,10 +9,12 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
-app.options("*", cors());
-
 app.use(express.json());
 
+// Preflight für alle Routen
+app.options("*", cors());
+
+// Bestellung anlegen
 app.post("/api/order", async (req, res) => {
   try {
     const peechoPayload = {
@@ -32,10 +33,45 @@ app.post("/api/order", async (req, res) => {
 
     const text = await response.text();
     res.status(response.status).send(text);
-
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(3000);
+// Order-Details abrufen
+app.get("/api/order/details", async (req, res) => {
+  try {
+    const { environment, orderId } = req.query;
+
+    if (!orderId) {
+      return res.status(400).json({ error: "orderId fehlt" });
+    }
+
+    const baseUrl =
+      environment === "https://www.peecho.com"
+        ? "https://www.peecho.com"
+        : "https://test.www.peecho.com";
+
+    const apiKey = process.env.PEECHO_API_KEY;
+
+    const url =
+      `${baseUrl}/rest/v3/order/details` +
+      `?merchantApiKey=${encodeURIComponent(apiKey)}` +
+      `&orderId=${encodeURIComponent(orderId)}`;
+
+    const response = await fetch(url, {
+      headers: {
+        "Accept": "application/json"
+      }
+    });
+
+    const text = await response.text();
+    res.status(response.status).send(text);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.listen(3000, () => {
+  console.log("Server läuft auf Port 3000");
+});

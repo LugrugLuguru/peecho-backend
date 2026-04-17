@@ -75,3 +75,24 @@ app.get("/api/order/details", async (req, res) => {
 app.listen(3000, () => {
   console.log("Server läuft auf Port 3000");
 });
+
+
+app.get("/api/countries", async (req, res) => {
+  try {
+    const apiKey = process.env.PEECHO_API_KEY;
+
+    const url = `https://test.www.peecho.com/rest/v3/countries?merchantApiKey=${encodeURIComponent(apiKey)}`;
+
+    const response = await fetch(url, {
+      headers: {
+        "Accept": "application/json"
+      }
+    });
+
+    const text = await response.text();
+    res.status(response.status).send(text);
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});

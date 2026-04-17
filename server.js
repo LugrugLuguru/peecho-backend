@@ -4,15 +4,20 @@ import cors from "cors";
 
 const app = express();
 
-app.use(cors()); // <-- wichtig!
+app.use(cors({
+  origin: "https://travelbooks.my-board.org",
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
+
+app.options("*", cors());
+
 app.use(express.json());
 
 app.post("/api/order", async (req, res) => {
   try {
-    const payload = req.body;
-
     const peechoPayload = {
-      ...payload,
+      ...req.body,
       merchant_api_key: process.env.PEECHO_API_KEY
     };
 

@@ -1,7 +1,10 @@
 import express from "express";
 import fetch from "node-fetch";
+import cors from "cors";
 
 const app = express();
+
+app.use(cors()); // <-- wichtig!
 app.use(express.json());
 
 app.post("/api/order", async (req, res) => {
@@ -22,12 +25,12 @@ app.post("/api/order", async (req, res) => {
       body: JSON.stringify(peechoPayload)
     });
 
-    const data = await response.text();
-    res.status(response.status).send(data);
+    const text = await response.text();
+    res.status(response.status).send(text);
 
   } catch (err) {
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(3000, () => console.log("Server läuft"));
+app.listen(3000);
